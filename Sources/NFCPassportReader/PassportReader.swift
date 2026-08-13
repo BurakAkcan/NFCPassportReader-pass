@@ -41,6 +41,8 @@ extension PassportReaderTrackingDelegate {
 public class PassportReader : NSObject {
     private typealias NFCCheckedContinuation = CheckedContinuation<NFCPassportModel, Error>
     private var nfcContinuation: NFCCheckedContinuation?
+    private var pendingSuccessfulPassport: NFCPassportModel?
+    private var pendingReadError: Error?
 
     public weak var trackingDelegate: PassportReaderTrackingDelegate?
     private var passport : NFCPassportModel = NFCPassportModel()
@@ -94,6 +96,8 @@ public class PassportReader : NSObject {
     public func readPassport( mrzKey : String, tags : [DataGroupId] = [], aaChallenge: [UInt8]? = nil, skipSecureElements : Bool = true, skipCA : Bool = false, skipPACE : Bool = false, useExtendedMode : Bool = false, customDisplayMessage : ((NFCViewDisplayMessage) -> String?)? = nil) async throws -> NFCPassportModel {
         
         self.passport = NFCPassportModel()
+        self.pendingSuccessfulPassport = nil
+        self.pendingReadError = nil
         self.mrzKey = mrzKey
         self.aaChallenge = aaChallenge
         self.skipCA = skipCA
@@ -152,6 +156,25 @@ extension PassportReader : NFCTagReaderSessionDelegate {
         self.readerSession?.invalidate()
         self.readerSession = nil
 
+        // CoreNFC presents its own system sheet. Completing readPassport before
+        // this callback lets the host push the next KYC screen while that sheet
+        // is still being dismissed. Resolve the async read only after the NFC
+        // session has actually invalidated.
+        if let passport = pendingSuccessfulPassport {
+            pendingSuccessfulPassport = nil
+            pendingReadError = nil
+            shouldNotReportNextReaderSessionInvalidationErrorUserCanceled = false
+            resumeContinuation(returning: passport)
+            return
+        }
+
+        if let pendingReadError {
+            self.pendingReadError = nil
+            shouldNotReportNextReaderSessionInvalidationErrorUserCanceled = false
+            resumeContinuation(throwing: pendingReadError)
+            return
+        }
+
         if let readerError = error as? NFCReaderError, readerError.code == NFCReaderError.readerSessionInvalidationErrorUserCanceled
             && self.shouldNotReportNextReaderSessionInvalidationErrorUserCanceled {
             
@@ -174,8 +197,7 @@ extension PassportReader : NFCTagReaderSessionDelegate {
             } else {
                 Logger.passportReader.error( "tagReaderSession:didInvalidateWithError - Received error - \(error.localizedDescription)" )
             }
-            nfcContinuation?.resume(throwing: userError)
-            nfcContinuation = nil
+            resumeContinuation(throwing: userError)
         }
     }
     
@@ -223,9 +245,7 @@ extension PassportReader : NFCTagReaderSessionDelegate {
                     }
                 }
                 
-                let passportModel = try await self.startReading( tagReader : tagReader)
-                nfcContinuation?.resume(returning: passportModel)
-                nfcContinuation = nil
+                _ = try await self.startReading(tagReader: tagReader)
 
                 
             } catch let error as NFCPassportReaderError {
@@ -306,12 +326,20 @@ extension PassportReader {
 
         try await doActiveAuthenticationIfNeccessary(tagReader : tagReader)
 
-        self.updateReaderSessionMessage(alertMessage: NFCViewDisplayMessage.successfulRead)
-        self.shouldNotReportNextReaderSessionInvalidationErrorUserCanceled = true
-        self.readerSession?.invalidate()
-
         // If we have a masterlist url set then use that and verify the passport now
         self.passport.verifyPassport(masterListURL: self.masterListURL, useCMSVerification: self.passiveAuthenticationUsesOpenSSL)
+
+        self.updateReaderSessionMessage(alertMessage: NFCViewDisplayMessage.successfulRead)
+        self.pendingSuccessfulPassport = self.passport
+        self.shouldNotReportNextReaderSessionInvalidationErrorUserCanceled = true
+        guard let readerSession else {
+            // The session was already invalidated by the system, so there is no
+            // CoreNFC UI left to wait for.
+            pendingSuccessfulPassport = nil
+            resumeContinuation(returning: self.passport)
+            return self.passport
+        }
+        readerSession.invalidate()
 
         return self.passport
     }
@@ -467,11 +495,27 @@ extension PassportReader {
 
     func invalidateSession(errorMessage: NFCViewDisplayMessage, error: NFCPassportReaderError) {
       DispatchQueue.main.async {
+           guard let readerSession = self.readerSession else {
+               self.resumeContinuation(throwing: error)
+               return
+           }
+
+           self.pendingReadError = error
            self.shouldNotReportNextReaderSessionInvalidationErrorUserCanceled = true
-           self.readerSession?.invalidate(errorMessage: self.nfcViewDisplayMessageHandler?(errorMessage) ?? errorMessage.description)
-           self.nfcContinuation?.resume(throwing: error)
-           self.nfcContinuation = nil
+           readerSession.invalidate(errorMessage: self.nfcViewDisplayMessageHandler?(errorMessage) ?? errorMessage.description)
          }
+    }
+
+    private func resumeContinuation(returning passport: NFCPassportModel) {
+        let continuation = nfcContinuation
+        nfcContinuation = nil
+        continuation?.resume(returning: passport)
+    }
+
+    private func resumeContinuation(throwing error: Error) {
+        let continuation = nfcContinuation
+        nfcContinuation = nil
+        continuation?.resume(throwing: error)
     }
     
     internal func addDatagroupsToRead(com: COM, to DGsToRead: inout [DataGroupId]) {
