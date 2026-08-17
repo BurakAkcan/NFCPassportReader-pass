@@ -92,7 +92,24 @@ public class PassportReader : NSObject {
     public func overrideNFCDataAmountToRead( amount: Int ) {
         dataAmountToReadOverride = amount
     }
-    
+
+    /// Invalidates the active CoreNFC session and resumes a pending
+    /// `readPassport` call with `UserCanceled`.
+    public func invalidate() {
+        DispatchQueue.main.async {
+            guard let readerSession = self.readerSession else {
+                self.resumeContinuation(
+                    throwing: NFCPassportReaderError.UserCanceled
+                )
+                return
+            }
+
+            self.pendingReadError = NFCPassportReaderError.UserCanceled
+            self.shouldNotReportNextReaderSessionInvalidationErrorUserCanceled = true
+            readerSession.invalidate()
+        }
+    }
+
     public func readPassport( mrzKey : String, tags : [DataGroupId] = [], aaChallenge: [UInt8]? = nil, skipSecureElements : Bool = true, skipCA : Bool = false, skipPACE : Bool = false, useExtendedMode : Bool = false, customDisplayMessage : ((NFCViewDisplayMessage) -> String?)? = nil) async throws -> NFCPassportModel {
         
         self.passport = NFCPassportModel()
