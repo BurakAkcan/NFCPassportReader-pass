@@ -113,6 +113,9 @@ public class NFCPassportModel {
     public private(set) var dataGroupsAvailable = [DataGroupId]()
     public private(set) var dataGroupsRead : [DataGroupId:DataGroup] = [:]
     public private(set) var dataGroupHashes = [DataGroupId: DataGroupHash]()
+    /// Complete set of data-group hashes declared by the signed SOD.
+    /// Unlike `dataGroupHashes`, this also includes groups not requested during this read.
+    public private(set) var sodDataGroupHashes = [DataGroupId: String]()
 
     public internal(set) var cardAccess : CardAccess?
     public internal(set) var BACStatus : PassportAuthenticationStatus = .notDone
@@ -449,6 +452,7 @@ public class NFCPassportModel {
         passportDataNotTampered = false
         let asn1Data = try OpenSSLUtils.ASN1Parse( data: signedData )
         let (sodHashAlgorythm, sodHashes) = try parseSODSignatureContent( asn1Data )
+        sodDataGroupHashes = sodHashes
         
         var errors : String = ""
         for (id,dgVal) in dataGroupsRead {
