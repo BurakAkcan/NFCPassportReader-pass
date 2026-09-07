@@ -429,13 +429,16 @@ public class NFCPassportModel {
     }
 
     private func ensureReadDataNotBeenTamperedWith( useCMSVerification: Bool ) throws  {
+        passportDataNotTampered = false
+        documentSigningCertificateVerified = false
+        sodDataGroupHashes.removeAll()
+        dataGroupHashes.removeAll()
         guard let sod = getDataGroup(.SOD) as? SOD else {
             throw PassiveAuthenticationError.SODMissing("No SOD found" )
         }
 
         // Get SOD Content and verify that its correctly signed by the Document Signing Certificate
         var signedData : Data
-        documentSigningCertificateVerified = false
         do {
             if useCMSVerification {
                 signedData = try OpenSSLUtils.verifyAndReturnSODEncapsulatedDataUsingCMS(sod: sod)
@@ -444,19 +447,19 @@ public class NFCPassportModel {
             }
             documentSigningCertificateVerified = true
         } catch {
+            verificationErrors.append(error)
+            Logger.passportReader.error("SOD signature verification failed (CMS=\(useCMSVerification)): \(error.localizedDescription)")
             signedData = try sod.getEncapsulatedContent()
         }
                 
         // Now Verify passport data by comparing compare Hashes in SOD against
         // computed hashes to ensure data not been tampered with
-        passportDataNotTampered = false
-        let asn1Data = try OpenSSLUtils.ASN1Parse( data: signedData )
-        let (sodHashAlgorythm, sodHashes) = try parseSODSignatureContent( asn1Data )
-        sodDataGroupHashes = sodHashes
+        let (sodHashAlgorythm, sodHashes) = try LDSSecurityObjectParser.parseHashes(signedData)
+        sodDataGroupHashes = sodHashes.mapValues { binToHexRep(Array($0)) }
         
         var errors : String = ""
         for (id,dgVal) in dataGroupsRead {
-            guard let sodHashVal = sodHashes[id] else {
+            guard let sodHashBytes = sodHashes[id] else {
                 // SOD and COM don't have hashes so these aren't errors
                 if id != .SOD && id != .COM {
                     errors += "DataGroup \(id) is missing!\n"
@@ -464,10 +467,12 @@ public class NFCPassportModel {
                 continue
             }
             
-            let computedHashVal = binToHexRep(dgVal.hash(sodHashAlgorythm))
+            let computedHashBytes = dgVal.hash(sodHashAlgorythm)
+            let computedHashVal = binToHexRep(computedHashBytes)
+            let sodHashVal = binToHexRep(Array(sodHashBytes))
             
             var match = true
-            if computedHashVal != sodHashVal {
+            if Data(computedHashBytes) != sodHashBytes {
                 errors += "\(id) invalid hash:\n  SOD hash:\(sodHashVal)\n   Computed hash:\(computedHashVal)\n"
                 match = false
             }
@@ -485,60 +490,4 @@ public class NFCPassportModel {
     }
     
     
-    /// Parses an text ASN1 structure, and extracts the Hash Algorythm and Hashes contained from the Octect strings
-    /// - Parameter content: the text ASN1 stucure format
-    /// - Returns: The Hash Algorythm used - either SHA1 or SHA256, and a dictionary of hashes for the datagroups (currently only DG1 and DG2 are handled)
-    private func parseSODSignatureContent( _ content : String ) throws -> (String, [DataGroupId : String]){
-        var currentDG = ""
-        var sodHashAlgo = ""
-        var sodHashes :  [DataGroupId : String] = [:]
-        
-        let lines = content.components(separatedBy: "\n")
-        
-        let dgList : [DataGroupId] = [.COM,.DG1,.DG2,.DG3,.DG4,.DG5,.DG6,.DG7,.DG8,.DG9,.DG10,.DG11,.DG12,.DG13,.DG14,.DG15,.DG16,.SOD]
-
-        for line in lines {
-            if line.contains( "d=2" ) && line.contains( "OBJECT" ) {
-                if line.contains( "sha1" ) {
-                    sodHashAlgo = "SHA1"
-                } else if line.contains( "sha224" ) {
-                    sodHashAlgo = "SHA224"
-                } else if line.contains( "sha256" ) {
-                    sodHashAlgo = "SHA256"
-                } else if line.contains( "sha384" ) {
-                    sodHashAlgo = "SHA384"
-                } else if line.contains( "sha512" ) {
-                    sodHashAlgo = "SHA512"
-                }
-            } else if line.contains("d=3" ) && line.contains( "INTEGER" ) {
-                if let range = line.range(of: "INTEGER") {
-                    let substr = line[range.upperBound..<line.endIndex]
-                    if let r2 = substr.range(of: ":") {
-                        currentDG = String(line[r2.upperBound...])
-                    }
-                }
-                
-            } else if line.contains("d=3" ) && line.contains( "OCTET STRING" ) {
-                if let range = line.range(of: "[HEX DUMP]:") {
-                    let val = line[range.upperBound..<line.endIndex]
-                    if currentDG != "", let id = Int(currentDG, radix:16) {
-                        sodHashes[dgList[id]] = String(val)
-                        currentDG = ""
-                    }
-                }
-            }
-        }
-        
-        if sodHashAlgo == "" {
-            throw PassiveAuthenticationError.UnableToParseSODHashes("Unable to find hash algorythm used" )
-        }
-        if sodHashes.count == 0 {
-            throw PassiveAuthenticationError.UnableToParseSODHashes("Unable to extract hashes" )
-        }
-
-        Logger.passportReader.debug( "Parse SOD - Using Algo - \(sodHashAlgo)" )
-        Logger.passportReader.debug( "      - Hashes     - \(sodHashes)" )
-        
-        return (sodHashAlgo, sodHashes)
-    }
 }
