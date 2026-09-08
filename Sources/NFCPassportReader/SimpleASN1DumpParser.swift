@@ -18,7 +18,7 @@ public class ASN1Item : CustomDebugStringConvertible {
     var type : String = "" // Actual type of the value ( object, set, etc)
     var value : String = ""
     var line : String = ""
-    var parent : ASN1Item? = nil
+    weak var parent : ASN1Item? = nil
     
     private var children = [ASN1Item] ()
     

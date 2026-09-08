@@ -210,7 +210,18 @@ public class OpenSSLUtils {
         }
         
         // Get chain and issue certificate is the last cert in the chain
-        let chain = X509_STORE_CTX_get1_chain(store);
+        guard let chain = X509_STORE_CTX_get1_chain(store) else {
+            return .failure(OpenSSLError.UnableToVerifyX509CertificateForSOD("Unable to get certificate chain"))
+        }
+        defer {
+            let count = sk_X509_num(chain)
+            for index in 0 ..< count {
+                if let certificate = sk_X509_value(chain, index) {
+                    X509_free(certificate)
+                }
+            }
+            OPENSSL_sk_free(chain)
+        }
         let nrCertsInChain = sk_X509_num(chain)
         if nrCertsInChain > 1 {
             let cert = sk_X509_value(chain, nrCertsInChain-1)
