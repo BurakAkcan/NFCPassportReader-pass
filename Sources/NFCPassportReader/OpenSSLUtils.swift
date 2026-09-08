@@ -366,7 +366,10 @@ public class OpenSSLUtils {
     static func decryptRSASignature( signature : Data, pubKey : OpaquePointer ) throws -> [UInt8] {
         
         let pad = RSA_NO_PADDING
-        let rsa = EVP_PKEY_get1_RSA( pubKey )
+        guard let rsa = EVP_PKEY_get1_RSA(pubKey) else {
+            throw OpenSSLError.UnableToDecryptRSASignature("Unable to get RSA public key")
+        }
+        defer { RSA_free(rsa) }
         
         let keysize = RSA_size(rsa);
         var outputBuf = [UInt8](repeating: 0, count: Int(keysize))
@@ -587,7 +590,10 @@ public class OpenSSLUtils {
     @available(iOS 13, macOS 10.15, *)
     static func asn1EncodeOID (oid : String) -> [UInt8] {
         
-        let obj = OBJ_txt2obj( oid.cString(using: .utf8), 1)
+        guard let obj = OBJ_txt2obj(oid.cString(using: .utf8), 1) else {
+            return []
+        }
+        defer { ASN1_OBJECT_free(obj) }
         let payloadLen = i2d_ASN1_OBJECT(obj, nil)
         
         var data  = [UInt8](repeating: 0, count: Int(payloadLen))
@@ -652,6 +658,7 @@ public class OpenSSLUtils {
 
             pubKey = EVP_PKEY_new()
             guard EVP_PKEY_set1_DH(pubKey, dhKey) == 1 else {
+                EVP_PKEY_free(pubKey)
                 return nil
             }
         } else {
@@ -675,6 +682,7 @@ public class OpenSSLUtils {
             
             pubKey = EVP_PKEY_new()
             guard EVP_PKEY_set1_EC_KEY(pubKey, key) == 1 else {
+                EVP_PKEY_free(pubKey)
                 return nil
             }
         }
@@ -692,14 +700,21 @@ public class OpenSSLUtils {
         let keyType = EVP_PKEY_get_base_id( privateKeyPair )
         if keyType == EVP_PKEY_DH || keyType == EVP_PKEY_DHX {
             // Get bn for public key
-            let dh = EVP_PKEY_get1_DH(privateKeyPair);
-            
-            let dh_pub = EVP_PKEY_get1_DH(publicKey)
-            var bn = BN_new()
-            DH_get0_key( dh_pub, &bn, nil )
+            guard let dh = EVP_PKEY_get1_DH(privateKeyPair),
+                  let dhPub = EVP_PKEY_get1_DH(publicKey) else {
+                return []
+            }
+            defer {
+                DH_free(dh)
+                DH_free(dhPub)
+            }
+
+            var publicNumber: OpaquePointer?
+            DH_get0_key(dhPub, &publicNumber, nil)
+            guard let publicNumber else { return [] }
             
             secret = [UInt8](repeating: 0, count: Int(DH_size(dh)))
-            let len = DH_compute_key(&secret, bn, dh);
+            let len = DH_compute_key(&secret, publicNumber, dh)
             
             Logger.openSSL.debug( "OpenSSLUtils.computeSharedSecret - DH secret len - \(len) - \(secret)" )
         } else {

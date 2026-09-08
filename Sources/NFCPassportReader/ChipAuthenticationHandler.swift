@@ -112,20 +112,27 @@ class ChipAuthenticationHandler {
         
         // Generate Ephemeral Keypair from parameters from DG14 Public key
         // This should work for both EC and DH keys
-        var ephemeralKeyPair : OpaquePointer? = nil
-        let pctx = EVP_PKEY_CTX_new(publicKey, nil)
-        EVP_PKEY_keygen_init(pctx)
-        EVP_PKEY_keygen(pctx, &ephemeralKeyPair)
-        EVP_PKEY_CTX_free(pctx)
+        guard let pctx = EVP_PKEY_CTX_new(publicKey, nil) else {
+            throw NFCPassportReaderError.ChipAuthenticationFailed
+        }
+        defer { EVP_PKEY_CTX_free(pctx) }
+
+        var ephemeralKeyPair: OpaquePointer?
+        guard EVP_PKEY_keygen_init(pctx) == 1,
+              EVP_PKEY_keygen(pctx, &ephemeralKeyPair) == 1,
+              let ephemeralKeyPair else {
+            throw NFCPassportReaderError.ChipAuthenticationFailed
+        }
+        defer { EVP_PKEY_free(ephemeralKeyPair) }
         
         // Send the public key to the passport
-        try await sendPublicKey(oid: oid, keyId: keyId, pcdPublicKey: ephemeralKeyPair!)
+        try await sendPublicKey(oid: oid, keyId: keyId, pcdPublicKey: ephemeralKeyPair)
             
         Logger.chipAuth.debug( "Public Key successfully sent to passport!" )
         
         // Use our ephemeral private key and the passports public key to generate a shared secret
         // (the passport with do the same thing with their private key and our public key)
-        let sharedSecret = OpenSSLUtils.computeSharedSecret(privateKeyPair:ephemeralKeyPair!, publicKey:publicKey)
+        let sharedSecret = OpenSSLUtils.computeSharedSecret(privateKeyPair: ephemeralKeyPair, publicKey: publicKey)
         
         // Now try to restart Secure Messaging using the new shared secret and
         try restartSecureMessaging( oid : oid, sharedSecret : sharedSecret, maxTranceiveLength : 1, shouldCheckMAC : true)
