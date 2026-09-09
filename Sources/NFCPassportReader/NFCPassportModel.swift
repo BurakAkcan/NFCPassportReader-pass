@@ -414,18 +414,40 @@ public class NFCPassportModel {
         }
 
         let data = Data(sod.body)
-        let cert = try OpenSSLUtils.getX509CertificatesFromPKCS7( pkcs7Der: data ).first!
+        guard let cert = try OpenSSLUtils.getX509CertificatesFromPKCS7(pkcs7Der: data).first else {
+            throw OpenSSLError.UnableToGetX509CertificateFromPKCS7(
+                "SOD PKCS7 does not contain a document signing certificate"
+            )
+        }
         self.certificateSigningGroups[.documentSigningCertificate] = cert
+
+        let dsSubject = cert.getSubjectName() ?? "unavailable"
+        let dsIssuer = cert.getIssuerName() ?? "unavailable"
+        let dsSerial = cert.getSerialNumber() ?? "unavailable"
+        let dsValidFrom = cert.getNotBeforeDate() ?? "unavailable"
+        let dsValidTo = cert.getNotAfterDate() ?? "unavailable"
+        Logger.passportReader.debug(
+            "CSCA trust validation started | masterList=\(masterListURL.lastPathComponent, privacy: .public) | DS subject=\(dsSubject, privacy: .public) | issuer=\(dsIssuer, privacy: .public) | serial=\(dsSerial, privacy: .public) | validFrom=\(dsValidFrom, privacy: .public) | validTo=\(dsValidTo, privacy: .public)"
+        )
 
         let rc = OpenSSLUtils.verifyTrustAndGetIssuerCertificate( x509:cert, CAFile: masterListURL )
         switch rc {
         case .success(let csca):
             self.certificateSigningGroups[.issuerSigningCertificate] = csca
+            let cscaSubject = csca.getSubjectName() ?? "unavailable"
+            let cscaIssuer = csca.getIssuerName() ?? "unavailable"
+            let cscaSerial = csca.getSerialNumber() ?? "unavailable"
+            let cscaFingerprint = csca.getSHA256Fingerprint() ?? "unavailable"
+            Logger.passportReader.debug(
+                "CSCA trust validation passed | subject=\(cscaSubject, privacy: .public) | issuer=\(cscaIssuer, privacy: .public) | serial=\(cscaSerial, privacy: .public) | SHA256=\(cscaFingerprint, privacy: .public)"
+            )
         case .failure(let error):
+            Logger.passportReader.error(
+                "CSCA trust validation failed | masterList=\(masterListURL.lastPathComponent, privacy: .public) | reason=\(error.localizedDescription, privacy: .public)"
+            )
             throw error
         }
-                
-        Logger.passportReader.debug( "Passport passed SOD Verification" )
+
         self.passportCorrectlySigned = true
 
     }

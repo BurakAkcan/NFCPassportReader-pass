@@ -146,6 +146,12 @@ public class OpenSSLUtils {
                 }
             }
         }
+
+        guard !ret.isEmpty else {
+            throw OpenSSLError.UnableToGetX509CertificateFromPKCS7(
+                "PKCS7 container does not contain an X509 certificate"
+            )
+        }
         
         return ret
     }

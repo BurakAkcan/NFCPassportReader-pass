@@ -84,6 +84,19 @@ public class X509Wrapper {
         let arr = UnsafeMutableBufferPointer(start: md, count: Int(n)).map({ binToHexRep($0) }).joined(separator: ":")
         return arr
     }
+
+    public func getSHA256Fingerprint() -> String? {
+        let fdig = EVP_sha256()
+
+        var n: UInt32 = 0
+        let md = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(EVP_MAX_MD_SIZE))
+        defer { md.deallocate() }
+
+        guard X509_digest(cert, fdig, md, &n) == 1 else { return nil }
+        return UnsafeMutableBufferPointer(start: md, count: Int(n))
+            .map { binToHexRep($0) }
+            .joined(separator: ":")
+    }
     
     public func getNotBeforeDate() -> String? {
         var notBefore : String?
